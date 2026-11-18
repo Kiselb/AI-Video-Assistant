@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
+import imageio_ffmpeg
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -27,6 +28,7 @@ BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 ALLOWED_EXTENSIONS = {".mp4", ".webm"}
 MAX_UPLOAD_BYTES = 250 * 1024 * 1024
+DIRECT_TRANSCRIPTION_MAX_BYTES = 25 * 1024 * 1024
 CHUNK_SIZE = 1024 * 1024
 
 PROXY_API_API_KEY = os.getenv("PROXY_API_API_KEY", "").strip()
@@ -35,6 +37,7 @@ TRANSCRIPTION_MODEL = os.getenv(
     "OPENAI_TRANSCRIPTION_MODEL", "gpt-4o-mini-transcribe"
 ).strip()
 SUMMARY_MODEL = os.getenv("OPENAI_SUMMARY_MODEL", "gpt-4o-mini").strip()
+IS_VERCEL = bool(os.getenv("VERCEL"))
 
 app = FastAPI(title="AI-анализатор видеовстреч", version="2.0.0")
 processing_lock = asyncio.Lock()
@@ -79,9 +82,28 @@ def get_openai_client() -> OpenAI:
     return client
 
 
+def find_ffmpeg_executable() -> str:
+    system_ffmpeg = shutil.which("ffmpeg")
+    if system_ffmpeg:
+        return system_ffmpeg
+
+    try:
+        bundled_ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    except (OSError, RuntimeError):
+        return ""
+    return bundled_ffmpeg if Path(bundled_ffmpeg).is_file() else ""
+
+
 def extract_audio(video_path: Path, audio_path: Path) -> None:
+    ffmpeg_executable = find_ffmpeg_executable()
+    if not ffmpeg_executable:
+        raise MediaProcessingError(
+            "FFmpeg недоступен. Переустановите зависимости приложения или "
+            "используйте видео размером до 25 МБ."
+        )
+
     command = [
-        "ffmpeg",
+        ffmpeg_executable,
         "-nostdin",
         "-hide_banner",
         "-loglevel",
@@ -126,9 +148,25 @@ def extract_audio(video_path: Path, audio_path: Path) -> None:
         )
 
 
-def transcribe_audio(client: OpenAI, audio_path: Path) -> str:
+def prepare_transcription_file(video_path: Path, audio_path: Path) -> Path:
+    """Return compressed audio locally or the original media on serverless hosts."""
+
+    if find_ffmpeg_executable():
+        extract_audio(video_path, audio_path)
+        return audio_path
+
+    if video_path.stat().st_size > DIRECT_TRANSCRIPTION_MAX_BYTES:
+        raise MediaProcessingError(
+            "На сервере недоступен FFmpeg, а исходное видео превышает лимит "
+            "прямой транскрибации 25 МБ. Используйте запись меньшего размера "
+            "или разверните приложение на сервере с установленным FFmpeg."
+        )
+    return video_path
+
+
+def transcribe_audio(client: OpenAI, media_path: Path) -> str:
     try:
-        with audio_path.open("rb") as audio_file:
+        with media_path.open("rb") as audio_file:
             result = client.audio.transcriptions.create(
                 model=TRANSCRIPTION_MODEL,
                 file=audio_file,
@@ -222,8 +260,8 @@ open_questions — массив вопросов, которые явно ост
 
 def process_video(video_path: Path, audio_path: Path) -> dict[str, Any]:
     client = get_openai_client()
-    extract_audio(video_path, audio_path)
-    transcript = transcribe_audio(client, audio_path)
+    transcription_path = prepare_transcription_file(video_path, audio_path)
+    transcript = transcribe_audio(client, transcription_path)
     summary = create_summary(client, transcript)
     return {"transcript": transcript, "summary": summary}
 
@@ -274,34 +312,21 @@ def _filename_from_content_disposition(header: str) -> str:
 
 def detect_video_extension(video_path: Path) -> str:
     try:
-        result = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-show_entries",
-                "format=format_name",
-                "-of",
-                "default=noprint_wrappers=1:nokey=1",
-                str(video_path),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=45,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        raise MediaProcessingError(
-            "Не удалось проверить формат видео. Убедитесь, что FFprobe установлен."
-        ) from exc
+        with video_path.open("rb") as media_file:
+            header = media_file.read(8192)
+    except OSError as exc:
+        raise MediaProcessingError("Не удалось прочитать загруженное видео.") from exc
 
-    formats = result.stdout.strip().lower()
-    if result.returncode != 0:
-        return ""
-    if "webm" in formats or "matroska" in formats:
-        return ".webm"
-    if any(name in formats for name in ("mp4", "mov", "m4a", "3gp")):
+    # MP4 is an ISO Base Media file and normally contains the ftyp box first.
+    if len(header) >= 12 and header[4:8] == b"ftyp":
         return ".mp4"
+
+    # WebM is an EBML container whose DocType in the header is "webm".
+    if header.startswith(b"\x1a\x45\xdf\xa3") and b"webm" in header.lower():
+        return ".webm"
+
+    if not header:
+        return ""
     return ""
 
 
@@ -436,8 +461,12 @@ async def run_analysis_task(
         set_task_state(task_id, status="transcribing")
         audio_path = work_dir / "audio.mp3"
         client = get_openai_client()
-        await asyncio.to_thread(extract_audio, video_path, audio_path)
-        transcript = await asyncio.to_thread(transcribe_audio, client, audio_path)
+        transcription_path = await asyncio.to_thread(
+            prepare_transcription_file, video_path, audio_path
+        )
+        transcript = await asyncio.to_thread(
+            transcribe_audio, client, transcription_path
+        )
 
         set_task_state(task_id, status="analyzing", transcript=transcript)
         summary = await asyncio.to_thread(create_summary, client, transcript)
@@ -531,7 +560,12 @@ async def create_upload_task(file: UploadFile = File(...)) -> dict[str, Any]:
             )
         analysis_tasks[task_id] = task
 
-    keep_background_task(run_analysis_task(task_id, work_dir, video_path=video_path))
+    if IS_VERCEL:
+        # A serverless invocation may be frozen as soon as the response is sent.
+        # Keep the request open so processing reliably finishes on Vercel.
+        await run_analysis_task(task_id, work_dir, video_path=video_path)
+    else:
+        keep_background_task(run_analysis_task(task_id, work_dir, video_path=video_path))
     return public_task(task)
 
 
@@ -569,9 +603,12 @@ async def create_cloud_task(payload: CloudImportRequest) -> dict[str, Any]:
         cloud_link_tasks[normalized_url] = task_id
 
     work_dir = Path(tempfile.mkdtemp(prefix="meeting-cloud-task-"))
-    keep_background_task(
-        run_analysis_task(task_id, work_dir, drive_file_id=file_id)
-    )
+    if IS_VERCEL:
+        await run_analysis_task(task_id, work_dir, drive_file_id=file_id)
+    else:
+        keep_background_task(
+            run_analysis_task(task_id, work_dir, drive_file_id=file_id)
+        )
     return {**public_task(task), "duplicate": False}
 
 

@@ -99,6 +99,48 @@ def test_transcription_uses_proxy_supported_json_format() -> None:
     assert captured["response_format"] == "json"
 
 
+def test_detects_mp4_and_webm_without_ffprobe() -> None:
+    with TemporaryDirectory(dir=Path(__file__).parent) as temp_dir:
+        temp_path = Path(temp_dir)
+        mp4_path = temp_path / "video"
+        webm_path = temp_path / "other"
+        invalid_path = temp_path / "invalid"
+
+        mp4_path.write_bytes(b"\x00\x00\x00\x18ftypisom" + b"\x00" * 32)
+        webm_path.write_bytes(b"\x1a\x45\xdf\xa3" + b"\x00webm\x00" + b"\x00" * 32)
+        invalid_path.write_bytes(b"not a media file")
+
+        assert main.detect_video_extension(mp4_path) == ".mp4"
+        assert main.detect_video_extension(webm_path) == ".webm"
+        assert main.detect_video_extension(invalid_path) == ""
+
+
+def test_uses_original_video_when_ffmpeg_is_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr(main, "find_ffmpeg_executable", lambda: "")
+
+    with TemporaryDirectory(dir=Path(__file__).parent) as temp_dir:
+        temp_path = Path(temp_dir)
+        video_path = temp_path / "video.mp4"
+        video_path.write_bytes(b"small video")
+
+        assert main.prepare_transcription_file(
+            video_path, temp_path / "audio.mp3"
+        ) == video_path
+
+
+def test_direct_transcription_rejects_oversized_video(monkeypatch) -> None:
+    monkeypatch.setattr(main, "find_ffmpeg_executable", lambda: "")
+
+    with TemporaryDirectory(dir=Path(__file__).parent) as temp_dir:
+        temp_path = Path(temp_dir)
+        video_path = temp_path / "video.mp4"
+        with video_path.open("wb") as video_file:
+            video_file.truncate(main.DIRECT_TRANSCRIPTION_MAX_BYTES + 1)
+
+        with pytest.raises(main.MediaProcessingError, match="25 МБ"):
+            main.prepare_transcription_file(video_path, temp_path / "audio.mp3")
+
+
 @pytest.mark.parametrize(
     ("url", "expected_id"),
     [
@@ -152,3 +194,33 @@ def test_cloud_task_is_deduplicated_by_normalized_link(monkeypatch) -> None:
     assert second.status_code == 202
     assert second.json()["duplicate"] is True
     assert second.json()["id"] == first.json()["id"]
+
+
+def test_vercel_cloud_task_finishes_before_response(monkeypatch) -> None:
+    async def fake_analysis(task_id, *_args, **_kwargs):
+        main.set_task_state(
+            task_id,
+            filename="meeting.mp4",
+            status="ready",
+            transcript="Расшифровка",
+            summary={
+                "brief": "Краткое содержание",
+                "decisions": [],
+                "tasks": [],
+                "open_questions": [],
+            },
+        )
+
+    monkeypatch.setattr(main, "IS_VERCEL", True)
+    monkeypatch.setattr(main, "run_analysis_task", fake_analysis)
+
+    response = client.post(
+        "/api/tasks/cloud",
+        json={
+            "url": "https://drive.google.com/file/d/1AbCdEfGhIjKlMnOp/view"
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "ready"
+    assert response.json()["filename"] == "meeting.mp4"
