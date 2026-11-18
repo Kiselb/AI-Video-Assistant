@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Расшифровка и конспект видеовстреч с помощью AI" />
+    <title>Смысл — AI-анализатор встреч</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Onest:wght@500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-one" aria-hidden="true"></div>
+    <div class="ambient ambient-two" aria-hidden="true"></div>
+
+    <header class="site-header shell">
+      <a class="brand" href="#" aria-label="Смысл — главная">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32" role="img"><path d="M7 9.5A4.5 4.5 0 0 1 11.5 5h9A4.5 4.5 0 0 1 25 9.5v6a4.5 4.5 0 0 1-4.5 4.5H16l-5.7 5v-5A4.5 4.5 0 0 1 7 15.5v-6Z"/><path class="brand-wave" d="M11.5 13h1.8l1.3-3.2 2.2 6.4 1.6-4.2.9 1H21"/></svg>
+        </span>
+        <span>Смысл</span>
+      </a>
+      <div class="privacy-pill">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6.5 8V6a3.5 3.5 0 1 1 7 0v2m-8 0h9a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z"/></svg>
+        Результаты хранятся в браузере
+      </div>
+    </header>
+
+    <main class="shell">
+      <section class="hero">
+        <div class="eyebrow"><span></span> AI-анализ видеовстреч</div>
+        <h1>Превращаем разговор<br />в <em>ясный план</em></h1>
+        <p>Загрузите запись встречи — мы расшифруем речь, выделим решения, задачи и вопросы, которые ещё требуют ответа.</p>
+      </section>
+
+      <section class="upload-panel" aria-labelledby="upload-title">
+        <div class="upload-copy">
+          <span class="step-label">Новая встреча</span>
+          <h2 id="upload-title">Добавьте видеозапись</h2>
+          <p>Поддерживаются WebM и MP4, до 250 МБ. Анализ начнётся автоматически.</p>
+        </div>
+
+        <div class="input-methods">
+          <div id="dropzone" class="dropzone" role="button" tabindex="0" aria-describedby="upload-hint">
+            <input id="file-input" type="file" accept="video/webm,video/mp4,.webm,.mp4" hidden />
+            <div class="upload-icon" aria-hidden="true">
+              <svg viewBox="0 0 32 32"><path d="M16 21V7m0 0-5 5m5-5 5 5M8 19v4a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-4"/></svg>
+            </div>
+            <div>
+              <strong>Перетащите видео сюда</strong>
+              <span id="upload-hint">или <u>выберите файл</u> на компьютере</span>
+            </div>
+            <span class="format-badge">WEBM · MP4</span>
+          </div>
+
+          <div class="method-divider"><span>или из облака</span></div>
+
+          <form id="cloud-form" class="cloud-form">
+            <label for="cloud-url">Ссылка на видеозапись Google Drive</label>
+            <div class="cloud-control">
+              <span class="cloud-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M8.4 4h7.2l4.4 7.6-3.6 6.2H7.6L4 11.6 8.4 4Z"/><path d="m8.4 4 4.5 7.6L8.8 19M20 11.6h-7.1"/></svg>
+              </span>
+              <input id="cloud-url" type="url" inputmode="url" autocomplete="off" placeholder="https://drive.google.com/file/d/…/view" />
+              <button id="cloud-submit" type="submit">Добавить из облака</button>
+            </div>
+            <p>Файл должен быть доступен всем, у кого есть ссылка. Авторизация Google не используется.</p>
+          </form>
+        </div>
+      </section>
+
+      <section class="meetings-section" aria-labelledby="meetings-title">
+        <div class="section-heading">
+          <div>
+            <span class="step-label">История</span>
+            <h2 id="meetings-title">Ваши встречи</h2>
+          </div>
+          <span id="meeting-count" class="count-pill">0 встреч</span>
+        </div>
+
+        <div id="empty-state" class="empty-state">
+          <div class="empty-orbit" aria-hidden="true"><span></span></div>
+          <h3>Здесь появятся результаты</h3>
+          <p>Загрузите первую запись — расшифровка и конспект сохранятся в этом браузере.</p>
+        </div>
+        <div id="meeting-list" class="meeting-list" aria-live="polite"></div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <template id="meeting-template">
+      <article class="meeting-card">
+        <button class="meeting-header" type="button" aria-expanded="false">
+          <span class="file-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7V3Z"/><path d="M14 3v5h4M10 12h5m-5 4h5"/></svg></span>
+          <span class="meeting-meta">
+            <strong class="meeting-name"></strong>
+            <span class="meeting-submeta">
+              <span class="meeting-source"></span>
+              <span class="meeting-date"></span>
+            </span>
+          </span>
+          <span class="status-badge"></span>
+          <span class="chevron" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="m6 8 4 4 4-4"/></svg></span>
+        </button>
+        <div class="meeting-body" hidden></div>
+      </article>
+    </template>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>
